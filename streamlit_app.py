@@ -34,8 +34,11 @@ geod = Geod(ellps="WGS84")
 # Great circle calculator
 # ======================
 def great_circle_points(lat1, lon1, lat2, lon2, n_points=100):
-    lons, lats = geod.npts(lon1, lat1, lon2, lat2, n_points)
-    return [(lat1, lon1)] + [(lat, lon) for lon, lat in zip(lons, lats)] + [(lat2, lon2)]
+    # geod.npts returns list of (lon, lat)
+    intermediate = geod.npts(lon1, lat1, lon2, lat2, n_points)
+    path = [(lat1, lon1)] + [(lat, lon) for lon, lat in intermediate] + [(lat2, lon2)]
+    return path
+
 
 def compute_distance_hours(lat1, lon1, lat2, lon2, speed_kmh):
     az12, az21, dist_m = geod.inv(lon1, lat1, lon2, lat2)
