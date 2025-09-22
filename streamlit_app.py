@@ -1,152 +1,113 @@
 import streamlit as st
 import pandas as pd
 import folium
-from streamlit_folium import st_folium
 from pyproj import Geod
+from streamlit_folium import st_folium
 
 # ----------------------------
-# Load airports dataset
+# Load airport data
 # ----------------------------
 @st.cache_data
 def load_airports():
     df = pd.read_csv("data/airports.csv", low_memory=False)
-    df = df[df['iata'].notna() & (df['iata'] != '\\N')]
-    df = df[['iata', 'name', 'municipality', 'latitude_deg', 'longitude_deg']].drop_duplicates()
+
+    # Normalize column names
+    if "iata" in df.columns:
+        df.rename(columns={"iata": "iata_code"}, inplace=True)
+
+    # Keep only valid IATA codes
+    df = df[df["iata_code"].notna() & (df["iata_code"] != "\\N")]
+
+    # Drop duplicates
+    df = df.drop_duplicates(subset=["iata_code"])
+
     return df
 
-df_airports = load_airports()
-iata_codes = sorted(df_airports['iata'].unique())
-cities = sorted(df_airports['municipality'].dropna().unique())
-
-geod = Geod(ellps="WGS84")
-
 # ----------------------------
-# Helper functions
+# Great-circle calculator
 # ----------------------------
 def great_circle_points(lat1, lon1, lat2, lon2, n_points=200):
-    lons, lats = geod.npts(lon1, lat1, lon2, lat2, n_points)
-    return [(lat1, lon1)] + [(lat, lon) for lon, lat in zip(lons, lats)] + [(lat2, lon2)]
-
-def compute_distance(lat1, lon1, lat2, lon2):
-    az12, az21, dist = geod.inv(lon1, lat1, lon2, lat2)
-    return dist / 1000.0  # km
-
-def airport_lookup_by_city(city_query):
-    """Return airports for a city query (autocomplete style)."""
-    matches = df_airports[df_airports["municipality"].str.contains(city_query, case=False, na=False)]
-    return matches
-
-def airport_lookup_by_code(code_query):
-    """Return airports for an IATA code query (autocomplete style)."""
-    matches = df_airports[df_airports["iata"].str.contains(code_query.upper(), na=False)]
-    return matches
+    geod = Geod(ellps="WGS84")
+    line = geod.npts(lon1, lat1, lon2, lat2, n_points)
+    lons, lats = zip(*([(lon1, lat1)] + line + [(lon2, lat2)]))
+    return lats, lons
 
 # ----------------------------
-# Streamlit UI
+# Streamlit App
 # ----------------------------
 st.set_page_config(page_title="Flight Path Optimizer", layout="wide")
 
 st.title("✈️ Flight Path Optimizer")
+st.markdown("Find great-circle routes between airports worldwide 🌍")
 
-st.sidebar.header("Flight Settings")
+df_airports = load_airports()
 
-# Select input mode
-mode = st.sidebar.radio("Choose Input Mode:", ["By Airport Code", "By City Name"])
+# Build display labels
+df_airports["label"] = (
+    df_airports["municipality"].fillna("Unknown City") + " – " +
+    df_airports["name"].fillna("Unknown Airport") + " (" +
+    df_airports["iata_code"] + ")"
+)
 
-legs = []
-num_legs = st.sidebar.number_input("Number of legs", 1, 5, 1)
+# Sort alphabetically
+df_airports = df_airports.sort_values("label")
 
-for i in range(num_legs + 1):
-    if mode == "By Airport Code":
-        # Autocomplete airport code
-        code_query = st.sidebar.text_input(f"Enter IATA code (Airport {i+1})", key=f"code_query_{i}")
-        if code_query:
-            matches = airport_lookup_by_code(code_query)
-            if not matches.empty:
-                leg_airport = st.sidebar.selectbox(
-                    f"Matching airports for {code_query}",
-                    options=matches['iata'] + " - " + matches['municipality'] + " (" + matches['name'] + ")",
-                    key=f"airport_code_{i}"
-                )
-                leg_code = leg_airport.split(" - ")[0]
-            else:
-                st.sidebar.warning("No matches found.")
-                leg_code = None
-        else:
-            leg_code = None
+# Dropdowns
+st.sidebar.header("Select Route")
+origin_label = st.sidebar.selectbox("Origin Airport", df_airports["label"])
+dest_label = st.sidebar.selectbox("Destination Airport", df_airports["label"])
 
-    else:
-        # Autocomplete city name
-        city_query = st.sidebar.text_input(f"Enter City (Airport {i+1})", key=f"city_query_{i}")
-        if city_query:
-            matches = airport_lookup_by_city(city_query)
-            if not matches.empty:
-                leg_airport = st.sidebar.selectbox(
-                    f"Airports in {city_query}",
-                    options=matches['iata'] + " - " + matches['municipality'] + " (" + matches['name'] + ")",
-                    key=f"airport_city_{i}"
-                )
-                leg_code = leg_airport.split(" - ")[0]
-            else:
-                st.sidebar.warning("No airports found for this city.")
-                leg_code = None
-        else:
-            leg_code = None
+# Speed input (up to Mach 10 ≈ 12,348 km/h)
+speed = st.sidebar.number_input("Cruise Speed (km/h)", min_value=300, max_value=12348, value=900, step=50)
 
-    if leg_code:
-        legs.append(leg_code)
+# Multi-leg option
+multi_leg = st.sidebar.checkbox("Add intermediate stop(s)?")
+stops = []
+if multi_leg:
+    num_stops = st.sidebar.number_input("Number of stops", min_value=1, max_value=5, value=1, step=1)
+    for i in range(num_stops):
+        stop_label = st.sidebar.selectbox(f"Stop {i+1}", df_airports["label"], key=f"stop_{i}")
+        stops.append(stop_label)
 
-speed = st.sidebar.slider("Cruise Speed (Mach)", 0.5, 10.0, 0.85, 0.05)
-kmh_speed = speed * 1235.0  # Mach 1 = ~1235 km/h
+# Compute button
+if st.sidebar.button("Compute Route"):
+    # Look up origin/destination
+    origin = df_airports[df_airports["label"] == origin_label].iloc[0]
+    dest = df_airports[df_airports["label"] == dest_label].iloc[0]
 
-# ----------------------------
-# Route computation
-# ----------------------------
-if st.sidebar.button("Compute Route") and len(legs) > 1:
-    total_distance = 0
-    total_time = 0
-    results = []
+    # Route legs
+    route_labels = [origin_label] + stops + [dest_label]
+    route_points = [origin] + [df_airports[df_airports["label"] == s].iloc[0] for s in stops] + [dest]
 
-    # Initialize map centered on first airport
-    origin = df_airports[df_airports["iata"] == legs[0]].iloc[0]
+    # Initialize map centered on origin
     m = folium.Map(location=[origin["latitude_deg"], origin["longitude_deg"]], zoom_start=3)
 
-    for i in range(len(legs) - 1):
-        o = df_airports[df_airports["iata"] == legs[i]].iloc[0]
-        d = df_airports[df_airports["iata"] == legs[i + 1]].iloc[0]
+    total_distance = 0.0
 
-        # Compute distance and ETA
-        dist = compute_distance(o["latitude_deg"], o["longitude_deg"],
-                                d["latitude_deg"], d["longitude_deg"])
-        eta = dist / kmh_speed
+    # Draw each leg
+    for i in range(len(route_points) - 1):
+        o, d = route_points[i], route_points[i+1]
+        lats, lons = great_circle_points(
+            o["latitude_deg"], o["longitude_deg"],
+            d["latitude_deg"], d["longitude_deg"], n_points=200
+        )
+        folium.PolyLine(list(zip(lats, lons)), color="blue", weight=3).add_to(m)
+        folium.Marker([o["latitude_deg"], o["longitude_deg"]], tooltip=route_labels[i]).add_to(m)
+        total_distance += Geod(ellps="WGS84").inv(
+            o["longitude_deg"], o["latitude_deg"],
+            d["longitude_deg"], d["latitude_deg"]
+        )[2] / 1000.0  # meters → km
 
-        total_distance += dist
-        total_time += eta
-        results.append({
-            "From": f"{o['iata']} ({o['municipality']})",
-            "To": f"{d['iata']} ({d['municipality']})",
-            "Distance (km)": round(dist, 1),
-            "ETA (hours)": round(eta, 2)
-        })
+    # Add destination marker
+    folium.Marker([dest["latitude_deg"], dest["longitude_deg"]],
+                  tooltip=route_labels[-1], icon=folium.Icon(color="red")).add_to(m)
 
-        # Plot great circle path
-        path = great_circle_points(o["latitude_deg"], o["longitude_deg"],
-                                   d["latitude_deg"], d["longitude_deg"], n_points=200)
-        folium.PolyLine(path, color="blue", weight=2.5).add_to(m)
-
-        # Add markers with IATA + City + Airport Name
-        folium.Marker(
-            [o["latitude_deg"], o["longitude_deg"]],
-            popup=f"{o['iata']} - {o['municipality']}<br>{o['name']}"
-        ).add_to(m)
-        folium.Marker(
-            [d["latitude_deg"], d["longitude_deg"]],
-            popup=f"{d['iata']} - {d['municipality']}<br>{d['name']}"
-        ).add_to(m)
-
-    # --- Results Section ---
-    st.subheader("📊 Leg-by-Leg Breakdown")
-    st.dataframe(pd.DataFrame(results), use_container_width=True)
-
-    st.subheader("🗺️ Route Map")
+    # Show map
     st_folium(m, width=1000, height=600)
+
+    # Show stats
+    st.subheader("📊 Route Stats")
+    st.write(f"**Total Distance:** {total_distance:.1f} km")
+    eta = total_distance / speed
+    st.write(f"**ETA (@{speed} km/h):** {eta:.2f} hours")
+
