@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+.venv/
+
+# Data (large datasets can be redownloaded)
+data/airports.csv
+
+# Maps output
+route_map.html
