@@ -1,0 +1,5 @@
+pandas
+geopy
+folium
+requests
+numpy
