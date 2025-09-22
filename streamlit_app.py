@@ -1,113 +1,118 @@
 import streamlit as st
 import pandas as pd
 import folium
-from pyproj import Geod
 from streamlit_folium import st_folium
+from pyproj import Geod
 
-# ----------------------------
-# Load airport data
-# ----------------------------
+# ======================
+# Load airports
+# ======================
 @st.cache_data
 def load_airports():
     df = pd.read_csv("data/airports.csv", low_memory=False)
 
-    # Normalize column names
+    # Normalize IATA column
     if "iata" in df.columns:
         df.rename(columns={"iata": "iata_code"}, inplace=True)
 
-    # Keep only valid IATA codes
     df = df[df["iata_code"].notna() & (df["iata_code"] != "\\N")]
-
-    # Drop duplicates
     df = df.drop_duplicates(subset=["iata_code"])
+
+    # Add display column (city - name (IATA))
+    df["display_name"] = (
+        df["municipality"].fillna("Unknown") + " – " +
+        df["name"].fillna("Unknown") + " (" + df["iata_code"] + ")"
+    )
 
     return df
 
-# ----------------------------
-# Great-circle calculator
-# ----------------------------
-def great_circle_points(lat1, lon1, lat2, lon2, n_points=200):
-    geod = Geod(ellps="WGS84")
-    line = geod.npts(lon1, lat1, lon2, lat2, n_points)
-    lons, lats = zip(*([(lon1, lat1)] + line + [(lon2, lat2)]))
-    return lats, lons
-
-# ----------------------------
-# Streamlit App
-# ----------------------------
-st.set_page_config(page_title="Flight Path Optimizer", layout="wide")
-
-st.title("✈️ Flight Path Optimizer")
-st.markdown("Find great-circle routes between airports worldwide 🌍")
 
 df_airports = load_airports()
+geod = Geod(ellps="WGS84")
 
-# Build display labels
-df_airports["label"] = (
-    df_airports["municipality"].fillna("Unknown City") + " – " +
-    df_airports["name"].fillna("Unknown Airport") + " (" +
-    df_airports["iata_code"] + ")"
-)
+# ======================
+# Great circle calculator
+# ======================
+def great_circle_points(lat1, lon1, lat2, lon2, n_points=100):
+    lons, lats = geod.npts(lon1, lat1, lon2, lat2, n_points)
+    return [(lat1, lon1)] + [(lat, lon) for lon, lat in zip(lons, lats)] + [(lat2, lon2)]
 
-# Sort alphabetically
-df_airports = df_airports.sort_values("label")
+def compute_distance_hours(lat1, lon1, lat2, lon2, speed_kmh):
+    az12, az21, dist_m = geod.inv(lon1, lat1, lon2, lat2)
+    dist_km = dist_m / 1000
+    hours = dist_km / speed_kmh
+    return dist_km, hours
 
-# Dropdowns
-st.sidebar.header("Select Route")
-origin_label = st.sidebar.selectbox("Origin Airport", df_airports["label"])
-dest_label = st.sidebar.selectbox("Destination Airport", df_airports["label"])
+# ======================
+# Streamlit UI
+# ======================
+st.title("🌍 Flight Path Optimizer")
+st.write("Plan great-circle routes between airports with support for multiple legs and speeds up to Mach 10 🚀")
 
-# Speed input (up to Mach 10 ≈ 12,348 km/h)
-speed = st.sidebar.number_input("Cruise Speed (km/h)", min_value=300, max_value=12348, value=900, step=50)
+# Multi-leg input
+legs = st.number_input("How many flight legs?", min_value=1, max_value=5, value=1, step=1)
 
-# Multi-leg option
-multi_leg = st.sidebar.checkbox("Add intermediate stop(s)?")
-stops = []
-if multi_leg:
-    num_stops = st.sidebar.number_input("Number of stops", min_value=1, max_value=5, value=1, step=1)
-    for i in range(num_stops):
-        stop_label = st.sidebar.selectbox(f"Stop {i+1}", df_airports["label"], key=f"stop_{i}")
-        stops.append(stop_label)
+# Store results in session state
+if "routes" not in st.session_state:
+    st.session_state.routes = None
 
-# Compute button
-if st.sidebar.button("Compute Route"):
-    # Look up origin/destination
-    origin = df_airports[df_airports["label"] == origin_label].iloc[0]
-    dest = df_airports[df_airports["label"] == dest_label].iloc[0]
+with st.form("route_form"):
+    origin_airports = []
+    dest_airports = []
 
-    # Route legs
-    route_labels = [origin_label] + stops + [dest_label]
-    route_points = [origin] + [df_airports[df_airports["label"] == s].iloc[0] for s in stops] + [dest]
-
-    # Initialize map centered on origin
-    m = folium.Map(location=[origin["latitude_deg"], origin["longitude_deg"]], zoom_start=3)
-
-    total_distance = 0.0
-
-    # Draw each leg
-    for i in range(len(route_points) - 1):
-        o, d = route_points[i], route_points[i+1]
-        lats, lons = great_circle_points(
-            o["latitude_deg"], o["longitude_deg"],
-            d["latitude_deg"], d["longitude_deg"], n_points=200
+    for i in range(legs):
+        origin = st.selectbox(
+            f"Leg {i+1} - Origin Airport",
+            df_airports["display_name"].tolist(),
+            key=f"origin_{i}"
         )
-        folium.PolyLine(list(zip(lats, lons)), color="blue", weight=3).add_to(m)
-        folium.Marker([o["latitude_deg"], o["longitude_deg"]], tooltip=route_labels[i]).add_to(m)
-        total_distance += Geod(ellps="WGS84").inv(
-            o["longitude_deg"], o["latitude_deg"],
-            d["longitude_deg"], d["latitude_deg"]
-        )[2] / 1000.0  # meters → km
+        dest = st.selectbox(
+            f"Leg {i+1} - Destination Airport",
+            df_airports["display_name"].tolist(),
+            key=f"dest_{i}"
+        )
+        origin_airports.append(origin)
+        dest_airports.append(dest)
 
-    # Add destination marker
-    folium.Marker([dest["latitude_deg"], dest["longitude_deg"]],
-                  tooltip=route_labels[-1], icon=folium.Icon(color="red")).add_to(m)
+    # Speed selector (up to Mach 10)
+    mach_speed = 1225  # km/h at sea level approx
+    speed_choice = st.slider("Cruise Speed (km/h)", min_value=200, max_value=mach_speed*10, value=900, step=50)
 
-    # Show map
-    st_folium(m, width=1000, height=600)
+    submitted = st.form_submit_button("✈️ Compute Route")
 
-    # Show stats
-    st.subheader("📊 Route Stats")
-    st.write(f"**Total Distance:** {total_distance:.1f} km")
-    eta = total_distance / speed
-    st.write(f"**ETA (@{speed} km/h):** {eta:.2f} hours")
+if submitted:
+    routes = []
+    total_dist = 0
+    total_time = 0
 
+    for i in range(legs):
+        o = df_airports[df_airports["display_name"] == origin_airports[i]].iloc[0]
+        d = df_airports[df_airports["display_name"] == dest_airports[i]].iloc[0]
+
+        dist, hrs = compute_distance_hours(o["latitude_deg"], o["longitude_deg"], d["latitude_deg"], d["longitude_deg"], speed_choice)
+        path = great_circle_points(o["latitude_deg"], o["longitude_deg"], d["latitude_deg"], d["longitude_deg"], n_points=200)
+
+        routes.append((o, d, path, dist, hrs))
+        total_dist += dist
+        total_time += hrs
+
+    # Save to session state
+    st.session_state.routes = (routes, total_dist, total_time)
+
+# ======================
+# Display results
+# ======================
+if st.session_state.routes:
+    routes, total_dist, total_time = st.session_state.routes
+
+    st.success(f"✅ Total Distance: {total_dist:.2f} km | Estimated Time: {total_time:.2f} hours")
+
+    # Create map
+    m = folium.Map(location=[20, 0], zoom_start=2)
+
+    for o, d, path, dist, hrs in routes:
+        folium.Marker([o["latitude_deg"], o["longitude_deg"]], popup=f"{o['display_name']}").add_to(m)
+        folium.Marker([d["latitude_deg"], d["longitude_deg"]], popup=f"{d['display_name']}").add_to(m)
+        folium.PolyLine(path, color="blue", weight=2.5, opacity=1).add_to(m)
+
+    st_folium(m, width=800, height=500)
