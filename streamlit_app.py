@@ -53,13 +53,17 @@ def haversine(lat1, lon1, lat2, lon2):
 # -------------------------------
 # Generate Great Circle Path
 # -------------------------------
+# -------------------------------
+# Generate Great Circle Path
+# -------------------------------
 def great_circle_points(lat1, lon1, lat2, lon2, n_points=100):
     geod = Geod(ellps="WGS84")
-    lons, lats = geod.npts(lon1, lat1, lon2, lat2, n_points)
-    # Include start + end
-    lats = [lat1] + [lat for lat in lats] + [lat2]
-    lons = [lon1] + [lon for lon in lons] + [lon2]
-    return list(zip(lats, lons))
+    # npts returns list of (lon, lat) tuples
+    intermediate_points = geod.npts(lon1, lat1, lon2, lat2, n_points)
+
+    # Add start and end, and flip (lon, lat) -> (lat, lon)
+    points = [(lat1, lon1)] + [(lat, lon) for lon, lat in intermediate_points] + [(lat2, lon2)]
+    return points
 
 
 # -------------------------------
