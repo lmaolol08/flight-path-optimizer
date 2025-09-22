@@ -7,8 +7,5 @@ __pycache__/
 # Virtual environment
 .venv/
 
-# Data (large datasets can be redownloaded)
-data/airports.csv
-
 # Maps output
 route_map.html
