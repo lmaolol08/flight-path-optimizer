@@ -3,6 +3,7 @@ import pandas as pd
 import folium
 from pathlib import Path
 from streamlit_folium import st_folium
+from math import radians, cos, sin, asin, sqrt
 
 
 # -------------------------------
@@ -39,8 +40,6 @@ def load_airports():
 # -------------------------------
 # Compute distance (Haversine)
 # -------------------------------
-from math import radians, cos, sin, asin, sqrt
-
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371  # Earth radius in km
     dlat = radians(lat2 - lat1)
@@ -72,15 +71,33 @@ with col2:
 # Cruise speed
 cruise_speed = st.slider("Cruise Speed (km/h)", 500, 950, 850)
 
-# Compute button
-if st.button("Compute Route"):
+# -------------------------------
+# Session state management
+# -------------------------------
+if "route_computed" not in st.session_state:
+    st.session_state.route_computed = False
+
+colA, colB = st.columns([1,1])
+with colA:
+    if st.button("Compute Route"):
+        st.session_state.route_computed = True
+with colB:
+    if st.button("Reset Route"):
+        st.session_state.route_computed = False
+
+# -------------------------------
+# Show results if route computed
+# -------------------------------
+if st.session_state.route_computed:
     if origin == dest:
         st.warning("⚠️ Origin and destination cannot be the same.")
+        st.session_state.route_computed = False
     else:
         o = df_airports[df_airports["iata"] == origin].iloc[0]
         d = df_airports[df_airports["iata"] == dest].iloc[0]
 
-        dist_km = haversine(o["latitude_deg"], o["longitude_deg"], d["latitude_deg"], d["longitude_deg"])
+        dist_km = haversine(o["latitude_deg"], o["longitude_deg"],
+                            d["latitude_deg"], d["longitude_deg"])
         eta_hr = dist_km / cruise_speed
 
         st.success(f"**Distance:** {dist_km:.1f} km | **ETA:** {eta_hr:.2f} hours")
