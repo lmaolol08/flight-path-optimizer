@@ -3,3 +3,7 @@ geopy
 folium
 requests
 numpy
+network
+streamlit
+streamlit-folium
+
