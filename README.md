@@ -20,7 +20,7 @@ Deployed with **Streamlit Cloud**, accessible from any browser. 🚀
 ---
 
 ## 🎥 Demo  
-👉 [**Live App Here**](https://YOUR-STREAMLIT-LINK)  
+👉 [**Live App Here**](https://airnavoptimizer.streamlit.app/)  
 
 <p align="center">
   <img src="docs/demo.gif" width="700" />
